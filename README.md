@@ -13,7 +13,6 @@ An example of how to use this crate can be found below:
     ```
 * ./cdp is the output directory where the generated code will be placed
 
-```rust
 ```bash
 cargo run -- ./devtools-protocol/json ./cdp
 ```
