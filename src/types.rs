@@ -35,11 +35,11 @@ pub(crate) fn generate_dependency_for_ref(_ref: &str) -> Option<(String, String)
 pub(crate) fn convert_to_rust_string(inp: String, case: Case) -> (String, String) {
     let inp_stripped = inp.replace("-", "_");
     match inp_stripped.as_str() {
-        "type" => (inp, "CDPtype".to_string()),
-        "$ref" => (inp, "CDPref".to_string()),
-        "enum" => (inp, "CDPkenum".to_string()),
-        "override" => (inp, "CDPoverride".to_string()),
-        "Self" => (inp, "CDPSelf".to_string()),
+        "type" => (inp, "cdp_type".to_string()),
+        "$ref" => (inp, "cdp_ref".to_string()),
+        "enum" => (inp, "cd_penum".to_string()),
+        "override" => (inp, "cdp_override".to_string()),
+        "Self" => (inp, "cdp_self".to_string()),
         _ => (inp, inp_stripped.to_case(case)),
     }
 }
@@ -143,7 +143,7 @@ pub trait CDPPropertyTrait {
         }
         Ok(dep)
     }
-    fn generate_prop_declaration(&self) -> Result<String, Error> {
+    fn generate_prop_declaration(&self, recursive: bool) -> Result<String, Error> {
         let orig_prop_name = self.name().0;
         let prop_name = self.name().1;
 
@@ -153,10 +153,17 @@ pub trait CDPPropertyTrait {
         if let Some(description) = self.description() {
             prop_command = generate_command(description.as_str())?;
         }
-        Ok(format!(
-            "{}#[serde(rename = \"{}\")]\npub {}: {},\n",
-            prop_command, orig_prop_name, prop_name, prop_type
-        ))
+        if recursive {
+            Ok(format!(
+                "{}#[serde(rename = \"{}\")]\n#[serde(flatten)]\npub {}: Option<BTreeMap<String, {}>>,\n",
+                prop_command, orig_prop_name, prop_name, prop_type
+            ))
+        } else {
+            Ok(format!(
+                "{}#[serde(rename = \"{}\")]\npub {}: {},\n",
+                prop_command, orig_prop_name, prop_name, prop_type
+            ))
+        }
     }
     fn generate_object_pair(&self) -> Result<String, Error> {
         let assign = format!(r##""{}": "##, self.name().0); // generate code to assign value to json
@@ -240,7 +247,17 @@ impl CDPType {
         code.push_str("#[derive(Debug, Deserialize, Serialize)]\n");
         code.push_str(format!("pub(crate) struct {} {{\n", id).as_str());
         for prop in self.properties.as_ref().unwrap() {
-            let prop_code = prop.generate_prop_declaration()?;
+            let mut prop_code = String::new();
+            let prop_type = prop.generate_rust_type()?;
+            if prop_type != id {
+                prop_code = prop.generate_prop_declaration(false)?;
+            } else {
+                // It means the call was recursive
+                prop_code = prop.generate_prop_declaration(true)?;
+                let mut set = HashSet::new();
+                set.insert("collections::BTreeMap".to_owned());
+                self.generated_dependencies.insert("std".to_owned(), set);
+            }
             if let Some(dep) = prop.generate_dependency_if_exists()? {
                 match self.generated_dependencies.get_mut(&dep.0) {
                     Some(v) => {
@@ -466,7 +483,7 @@ impl RustCodeGen for CDPCommand {
 
         // Generate return type
         let mut return_type = String::from("serde_json::Value"); // Default return type
-        let cdp_parser_wrapper = String::from("CDPParser<");
+        let cdp_parser_wrapper = String::from("CDP<");
         let json_return = String::from("");
         if let Some(returns) = &self.returns {
             match returns.len() {
@@ -567,7 +584,7 @@ impl RustCodeGen for CDPCommand {
         code.push_str(
             indent(
                 1,
-                "let mut request_handler = CDPParser::new(response_parser);\n".to_owned(),
+                "let mut request_handler = CDP::new(response_parser);\n".to_owned(),
             )
             .unwrap()
             .as_str(),
@@ -636,7 +653,7 @@ impl RustCodeGen for CDPEvent {
         code.push_str(format!("pub(crate) struct {} {{\n", name).as_str());
         if let Some(parameters) = self.parameters.as_ref() {
             for prop in parameters {
-                let prop_code = prop.generate_prop_declaration()?;
+                let prop_code = prop.generate_prop_declaration(false)?;
                 if let Some(dep) = prop.generate_dependency_if_exists()? {
                     match self.generated_dependencies.get_mut(&dep.0) {
                         Some(v) => {
@@ -765,14 +782,17 @@ impl RustCodeGen for CDPDomain {
             .for_each(|(k, v)| {
                 let modules = v.iter().map(String::from).collect::<Vec<String>>();
                 match modules.len() {
-                    1 => {
-                        code.push_str(format!("use crate::{}::{};\n", k, modules[0]).as_str());
-                    }
-                    _ => {
-                        code.push_str(
+                    1 => match k.as_str() {
+                        "std" => code.push_str(format!("use {}::{};\n", k, modules[0]).as_str()),
+                        _ => code.push_str(format!("use crate::{}::{};\n", k, modules[0]).as_str()),
+                    },
+                    _ => match k.as_str() {
+                        "std" => code
+                            .push_str(format!("use {}::{{{}}};\n", k, modules.join(", ")).as_str()),
+                        _ => code.push_str(
                             format!("use crate::{}::{{{}}};\n", k, modules.join(", ")).as_str(),
-                        );
-                    }
+                        ),
+                    },
                 }
             });
         code.push_str(generated_code.join("\n").as_str());

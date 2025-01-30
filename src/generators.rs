@@ -24,13 +24,13 @@ use serde::*;
 #[derive(Debug, Deserialize, Serialize)]
 pub(crate) struct Empty {}
 
-pub(crate) struct CDPParser<T> {
+pub(crate) struct CDP<T> {
     pub request: Option<String>,
     pub response: Option<String>,
     pub response_parser: fn(String) -> T,
 }
 
-impl<T> CDPParser<T>
+impl<T> CDP<T>
 where
     T: serde::de::DeserializeOwned,
 {
