@@ -245,7 +245,7 @@ impl CDPType {
             code.push_str(generate_command(description.as_str()).unwrap().as_str());
         }
         code.push_str("#[derive(Debug, Deserialize, Serialize)]\n");
-        code.push_str(format!("pub(crate) struct {} {{\n", id).as_str());
+        code.push_str(format!("pub struct {} {{\n", id).as_str());
         for prop in self.properties.as_ref().unwrap() {
             let mut prop_code = String::new();
             let prop_type = prop.generate_rust_type()?;
@@ -285,7 +285,7 @@ impl CDPType {
             code.push_str(generate_command(description.as_str()).unwrap().as_str());
         }
         code.push_str("#[derive(Debug, Deserialize, Serialize)]\n");
-        code.push_str(format!("pub(crate) enum {} {{\n", id).as_str());
+        code.push_str(format!("pub enum {} {{\n", id).as_str());
         for item in self._enum.as_ref().unwrap() {
             code.push_str(
                 indent(
@@ -326,7 +326,7 @@ impl CDPType {
             code.push_str(generate_command(description.as_str()).unwrap().as_str());
         }
         code.push_str("#[derive(Debug, Deserialize, Serialize)]\n");
-        code.push_str(format!("pub(crate) struct {}({});\n", id, js_type).as_str());
+        code.push_str(format!("pub struct {}({});\n", id, js_type).as_str());
         Ok(code)
     }
 }
@@ -457,7 +457,7 @@ impl RustCodeGen for CDPCommand {
         let mut code = String::new();
 
         // Generate function signature
-        code.push_str(format!("pub(crate) fn {}(", self.name().1).as_str());
+        code.push_str(format!("pub fn {}(", self.name().1).as_str());
 
         // Generate parameters
         if let Some(parameters) = &self.parameters {
@@ -650,7 +650,7 @@ impl RustCodeGen for CDPEvent {
             code.push_str(generate_command(description.as_str()).unwrap().as_str());
         }
         code.push_str("#[derive(Debug, Deserialize, Serialize)]\n");
-        code.push_str(format!("pub(crate) struct {} {{\n", name).as_str());
+        code.push_str(format!("pub struct {} {{\n", name).as_str());
         if let Some(parameters) = self.parameters.as_ref() {
             for prop in parameters {
                 let prop_code = prop.generate_prop_declaration(false)?;
