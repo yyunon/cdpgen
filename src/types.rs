@@ -1,4 +1,6 @@
+use convert_case::{Case, Casing};
 use serde::Deserialize;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::Error;
 use std::path::PathBuf;
@@ -8,17 +10,37 @@ use crate::generators::*;
 
 pub(crate) fn generate_rs_ref(_ref: &str) -> String {
     let ref_path_vec: Vec<&str> = _ref.split(".").collect();
-    let ref_path = ref_path_vec.join("::");
-    format!("crate::{}", ref_path)
+    match ref_path_vec.len() {
+        1 => ref_path_vec[0].to_owned(),
+        _ => {
+            ref_path_vec[1..ref_path_vec.len()].join("::")
+            //let ref_path_no_domain = ref_path_vec[1..ref_path_vec.len()].join("::");
+            //let mut ref_path = ref_path_vec[0].to_lowercase().replace("\"", "");
+            //ref_path.push_str("::");
+            //ref_path.push_str(ref_path_no_domain.as_str());
+            //ref_path
+        }
+    }
 }
-pub(crate) fn convert_to_rust_string(inp: String) -> (String, String) {
+pub(crate) fn generate_dependency_for_ref(_ref: &str) -> Option<(String, String)> {
+    let ref_path_vec: Vec<&str> = _ref.split(".").collect();
+    match ref_path_vec.len() {
+        1 => None,
+        _ => Some((
+            ref_path_vec[0].to_lowercase().replace("\"", ""),
+            ref_path_vec[1..ref_path_vec.len()].join("::"),
+        )),
+    }
+}
+pub(crate) fn convert_to_rust_string(inp: String, case: Case) -> (String, String) {
     let inp_stripped = inp.replace("-", "_");
     match inp_stripped.as_str() {
-        "type" => (inp, "_type".to_string()),
-        "ref" => (inp, "_ref".to_string()),
-        "$ref" => (inp, "_dollar_ref".to_string()),
-        "enum" => (inp, "_enum".to_string()),
-        _ => (inp, inp_stripped),
+        "type" => (inp, "CDPtype".to_string()),
+        "$ref" => (inp, "CDPref".to_string()),
+        "enum" => (inp, "CDPkenum".to_string()),
+        "override" => (inp, "CDPoverride".to_string()),
+        "Self" => (inp, "CDPSelf".to_string()),
+        _ => (inp, inp_stripped.to_case(case)),
     }
 }
 pub(crate) fn convert_to_rust_type(js_type: &str) -> Result<String, std::io::Error> {
@@ -32,11 +54,29 @@ pub(crate) fn convert_to_rust_type(js_type: &str) -> Result<String, std::io::Err
         _ => unimplemented!("Type not implemented"),
     }
 }
+
+pub trait CDPDependencyManager {
+    fn generated_dependencies_iter(
+        &self,
+    ) -> std::collections::hash_map::Iter<String, HashSet<String>>;
+}
+macro_rules! IMPL_DEPENDENCY_TRAIT {
+    (for $($t:ty),+) => {
+        $(impl CDPDependencyManager for $t {
+            fn generated_dependencies_iter(&self) -> std::collections::hash_map::Iter<String, HashSet<String>> {
+                self.generated_dependencies.iter()
+            }
+        })*
+    }
+}
+
+IMPL_DEPENDENCY_TRAIT!(for CDPCommand, CDPType, CDPEvent);
+
 pub trait RustCodeGen {
-    fn generate_rust_code(&self) -> Result<String, Error> {
+    fn generate_rust_code(&mut self) -> Result<String, Error> {
         Ok("".to_string())
     }
-    fn generate_rust_code_for_domain(&self, domain: String) -> Result<String, Error> {
+    fn generate_rust_code_for_domain(&mut self, domain: String) -> Result<String, Error> {
         Ok("".to_string())
     }
 }
@@ -66,6 +106,8 @@ macro_rules! GENERATE_PROPERTY_STRUCT {
             pub optional: Option<bool>,
             pub experimental: Option<bool>,
             pub deprecated: Option<bool>,
+            #[serde(default)]
+            pub generated_dependencies: HashMap<String, HashSet<String>>,
         })*
     }
 }
@@ -90,6 +132,17 @@ pub trait CDPPropertyTrait {
         }
         Ok(rust_type)
     }
+    fn generate_dependency_if_exists(&self) -> Result<Option<(String, String)>, Error> {
+        let mut dep = None;
+        if let Some(items) = self.items() {
+            if let Some(_ref) = items._ref.as_ref() {
+                dep = generate_dependency_for_ref(_ref.as_str());
+            }
+        } else if let Some(_ref) = self._ref().as_ref() {
+            dep = generate_dependency_for_ref(_ref.as_str());
+        }
+        Ok(dep)
+    }
     fn generate_prop_declaration(&self) -> Result<String, Error> {
         let orig_prop_name = self.name().0;
         let prop_name = self.name().1;
@@ -100,17 +153,10 @@ pub trait CDPPropertyTrait {
         if let Some(description) = self.description() {
             prop_command = generate_command(description.as_str())?;
         }
-        if prop_name != orig_prop_name {
-            Ok(format!(
-                "{}#[serde(rename = \"{}\")]\npub {}: {},\n",
-                prop_command, orig_prop_name, prop_name, prop_type
-            ))
-        } else {
-            Ok(format!(
-                "{}pub {}: {},\n",
-                prop_command, prop_name, prop_type
-            ))
-        }
+        Ok(format!(
+            "{}#[serde(rename = \"{}\")]\npub {}: {},\n",
+            prop_command, orig_prop_name, prop_name, prop_type
+        ))
     }
     fn generate_object_pair(&self) -> Result<String, Error> {
         let assign = format!(r##""{}": "##, self.name().0); // generate code to assign value to json
@@ -142,7 +188,7 @@ macro_rules! IMPL_PROPERTY_TRAIT {
             fn name(&self) -> (String, String) {
                 match self.name.as_ref() {
                     None => ("Unknown".to_string(), "Unknown".to_string()),
-                    Some(x) => convert_to_rust_string(x.clone()),
+                    Some(x) => convert_to_rust_string(x.clone(), Case::Snake),
                 }
             }
 
@@ -177,10 +223,12 @@ pub struct CDPType {
     #[serde(rename = "enum")]
     pub _enum: Option<Vec<String>>,
     pub properties: Option<Vec<CDPProperty>>,
+    #[serde(default)]
+    pub generated_dependencies: HashMap<String, HashSet<String>>,
 }
 
 impl CDPType {
-    fn generate_rust_struct(&self) -> Result<String, Error> {
+    fn generate_rust_struct(&mut self) -> Result<String, Error> {
         let mut code = String::new();
         let mut id = String::from("Unknown");
         if let Some(_id) = self.id.as_ref() {
@@ -193,6 +241,18 @@ impl CDPType {
         code.push_str(format!("pub(crate) struct {} {{\n", id).as_str());
         for prop in self.properties.as_ref().unwrap() {
             let prop_code = prop.generate_prop_declaration()?;
+            if let Some(dep) = prop.generate_dependency_if_exists()? {
+                match self.generated_dependencies.get_mut(&dep.0) {
+                    Some(v) => {
+                        v.insert(dep.1);
+                    }
+                    None => {
+                        let mut set = HashSet::new();
+                        set.insert(dep.1);
+                        self.generated_dependencies.insert(dep.0, set);
+                    }
+                }
+            }
             code.push_str(indent(1, prop_code).unwrap().as_str());
         }
         code.push_str("}\n");
@@ -210,7 +270,21 @@ impl CDPType {
         code.push_str("#[derive(Debug, Deserialize, Serialize)]\n");
         code.push_str(format!("pub(crate) enum {} {{\n", id).as_str());
         for item in self._enum.as_ref().unwrap() {
-            code.push_str(indent(1, format!("{},", item)).unwrap().as_str());
+            code.push_str(
+                indent(
+                    1,
+                    format!(
+                        "#[serde(rename = \"{}\")]\n{},\n",
+                        item,
+                        convert_to_rust_string(item.clone(), Case::UpperCamel)
+                            .1
+                            .as_str()
+                            .to_case(Case::UpperCamel),
+                    ),
+                )
+                .unwrap()
+                .as_str(),
+            );
         }
         code.push_str("}\n");
         Ok(code)
@@ -241,7 +315,7 @@ impl CDPType {
 }
 
 impl RustCodeGen for CDPType {
-    fn generate_rust_code(&self) -> Result<String, Error> {
+    fn generate_rust_code(&mut self) -> Result<String, Error> {
         if self._enum.is_some() {
             self.generate_rust_enum()
         } else if self.properties.is_some() {
@@ -291,7 +365,7 @@ impl CDPReturn {
     fn name(&self) -> (String, String) {
         match self.name.as_ref() {
             None => ("Unknown".to_string(), "Unknown".to_string()),
-            Some(x) => convert_to_rust_string(x.clone()),
+            Some(x) => convert_to_rust_string(x.clone(), Case::Snake),
         }
     }
     pub(crate) fn generate_return_declaration(&self) -> Result<String, Error> {
@@ -330,15 +404,15 @@ impl CDPReturn {
                 code.push_str("\t\t_ => Some(\n");
                 code.push_str(
                     format!(
-                        "\t\t\tserde_json::from_string({}.clone()).unwrap()\n\t\t),\n",
+                        "\t\t\tserde_json::from_value({}.clone()).unwrap()\n\t\t),\n",
                         name_code
                     )
                     .as_str(),
                 );
-                code.push_str("\t},\n");
+                code.push_str("\t}\n");
             }
         } else {
-            code = format!("serde_json::from_string({}.clone()).unwrap()", name_code);
+            code = format!("serde_json::from_value({}.clone()).unwrap()", name_code);
         }
         Ok(code)
     }
@@ -352,15 +426,17 @@ pub struct CDPCommand {
     pub deprecated: Option<bool>,
     pub parameters: Option<Vec<CDPParameter>>,
     pub returns: Option<Vec<CDPReturn>>,
+    #[serde(default)]
+    pub generated_dependencies: HashMap<String, HashSet<String>>,
 }
 
 impl CDPCommand {
     fn name(&self) -> (String, String) {
-        convert_to_rust_string(self.name.clone())
+        convert_to_rust_string(self.name.clone(), Case::Snake)
     }
 }
 impl RustCodeGen for CDPCommand {
-    fn generate_rust_code_for_domain(&self, domain: String) -> Result<String, Error> {
+    fn generate_rust_code_for_domain(&mut self, domain: String) -> Result<String, Error> {
         let mut code = String::new();
 
         // Generate function signature
@@ -371,6 +447,18 @@ impl RustCodeGen for CDPCommand {
             let mut params_vec = vec![];
             for param in parameters.iter() {
                 params_vec.push(param.generate_parameter_declaration()?);
+                if let Some(dep) = param.generate_dependency_if_exists()? {
+                    match self.generated_dependencies.get_mut(&dep.0) {
+                        Some(v) => {
+                            v.insert(dep.1);
+                        }
+                        None => {
+                            let mut set = HashSet::new();
+                            set.insert(dep.1);
+                            self.generated_dependencies.insert(dep.0, set);
+                        }
+                    }
+                }
             }
             code.push_str("\n\t");
             code.push_str(params_vec.join(",\n\t").as_str());
@@ -378,17 +466,45 @@ impl RustCodeGen for CDPCommand {
 
         // Generate return type
         let mut return_type = String::from("serde_json::Value"); // Default return type
-        let cdp_parser_wrapper = String::from("crate::utils::CDPRequest<");
+        let cdp_parser_wrapper = String::from("CDPParser<");
         let json_return = String::from("");
         if let Some(returns) = &self.returns {
             match returns.len() {
-                0 => return_type = json_return + "crate::Empty",
-                1 => return_type = json_return + returns[0].generate_return_declaration()?.as_str(),
+                0 => return_type = json_return + "Empty",
+                1 => {
+                    return_type = {
+                        if let Some(dep) = returns[0].generate_dependency_if_exists()? {
+                            match self.generated_dependencies.get_mut(&dep.0) {
+                                Some(v) => {
+                                    v.insert(dep.1);
+                                }
+                                None => {
+                                    let mut set = HashSet::new();
+                                    set.insert(dep.1);
+                                    self.generated_dependencies.insert(dep.0, set);
+                                }
+                            }
+                        }
+                        json_return + returns[0].generate_return_declaration()?.as_str()
+                    }
+                }
                 _ => {
                     return_type = json_return + "(";
                     let mut returns_vec = vec![];
                     for ret in returns.iter() {
                         returns_vec.push(ret.generate_return_declaration()?);
+                        if let Some(dep) = ret.generate_dependency_if_exists()? {
+                            match self.generated_dependencies.get_mut(&dep.0) {
+                                Some(v) => {
+                                    v.insert(dep.1);
+                                }
+                                None => {
+                                    let mut set = HashSet::new();
+                                    set.insert(dep.1);
+                                    self.generated_dependencies.insert(dep.0, set);
+                                }
+                            }
+                        }
                     }
                     return_type.push_str(returns_vec.join(", ").as_str());
                     return_type.push_str(") ");
@@ -406,7 +522,7 @@ impl RustCodeGen for CDPCommand {
         json_body_main.push_str(
             indent(
                 1,
-                format!("\"method\": \"{}.{}\"\n", domain.clone(), self.name().0),
+                format!("\"method\": \"{}.{}\",\n", domain.clone(), self.name().0),
             )?
             .as_str(),
         );
@@ -451,8 +567,7 @@ impl RustCodeGen for CDPCommand {
         code.push_str(
             indent(
                 1,
-                "let mut request_handler = crate::utils::CDPParser::new(response_parser);\n"
-                    .to_owned(),
+                "let mut request_handler = CDPParser::new(response_parser);\n".to_owned(),
             )
             .unwrap()
             .as_str(),
@@ -499,6 +614,8 @@ pub struct CDPEvent {
     pub experimental: Option<bool>,
     pub parameters: Option<Vec<CDPParameter>>,
     pub domain: Option<String>,
+    #[serde(default)]
+    pub generated_dependencies: HashMap<String, HashSet<String>>,
 }
 
 impl CDPEvent {
@@ -508,10 +625,10 @@ impl CDPEvent {
 }
 
 impl RustCodeGen for CDPEvent {
-    fn generate_rust_code_for_domain(&self, domain: String) -> Result<String, Error> {
+    fn generate_rust_code_for_domain(&mut self, domain: String) -> Result<String, Error> {
         let mut code = String::new();
         let names = self.name.split(".").collect::<Vec<&str>>();
-        let name = change_case_nth_letter(names[names.len() - 1], 0);
+        let name = change_case_nth_letter(names[names.len() - 1], 0, true);
         if let Some(description) = self.description.as_ref() {
             code.push_str(generate_command(description.as_str()).unwrap().as_str());
         }
@@ -520,6 +637,18 @@ impl RustCodeGen for CDPEvent {
         if let Some(parameters) = self.parameters.as_ref() {
             for prop in parameters {
                 let prop_code = prop.generate_prop_declaration()?;
+                if let Some(dep) = prop.generate_dependency_if_exists()? {
+                    match self.generated_dependencies.get_mut(&dep.0) {
+                        Some(v) => {
+                            v.insert(dep.1);
+                        }
+                        None => {
+                            let mut set = HashSet::new();
+                            set.insert(dep.1);
+                            self.generated_dependencies.insert(dep.0, set);
+                        }
+                    }
+                }
                 code.push_str(indent(1, prop_code).unwrap().as_str());
             }
         }
@@ -537,34 +666,115 @@ pub struct CDPDomain {
     pub types: Option<Vec<CDPType>>,
     pub commands: Vec<CDPCommand>,
     pub events: Option<Vec<CDPEvent>>,
+    #[serde(default)]
+    pub generated_dependencies: HashMap<String, HashSet<String>>,
 }
-
+impl CDPDomain {
+    fn generate_code_for_part<T>(&mut self, part: &mut T) -> Result<String, Error>
+    where
+        T: CDPDependencyManager + RustCodeGen,
+    {
+        let code = part.generate_rust_code()?;
+        part.generated_dependencies_iter().for_each(|(k, v)| {
+            match self.generated_dependencies.get_mut(k) {
+                Some(val) => {
+                    val.extend(v.clone());
+                }
+                None => {
+                    self.generated_dependencies.insert(k.clone(), v.clone());
+                }
+            }
+        });
+        Ok(code)
+    }
+}
 impl RustCodeGen for CDPDomain {
-    fn generate_rust_code(&self) -> Result<String, Error> {
+    fn generate_rust_code(&mut self) -> Result<String, Error> {
         let mut code = String::new();
         code.push_str(FILE_HEADER);
+
         let mut generated_code = vec![];
 
-        let mut imports = generate_import("serde::*")?;
-        generated_code.push(imports);
-        imports = generate_import("serde_json::*")?;
-        generated_code.push(imports);
+        if self.types.is_some() || self.events.is_some() {
+            // We do not use serde features in files with no struct or enum or primitive types
+            generated_code.push(generate_import("serde::*")?);
+        }
+        generated_code.push(generate_import("serde_json::*")?);
+        generated_code.push(generate_import("crate::utils::*")?);
 
-        if let Some(types) = &self.types {
-            for part in types.iter() {
+        if let Some(types) = &mut self.types {
+            for part in types.iter_mut() {
+                //PATCH
+                //TODO: Fix this later
+                if part._enum.is_none()
+                    && part.properties.is_none()
+                    && self.domain.replace("\", \"", "").to_lowercase() == "fetch"
+                {
+                    if let Some(id) = part.id.as_ref() {
+                        if id.to_case(Case::UpperCamel) == "RequestId" {
+                            continue;
+                        }
+                    }
+                }
                 generated_code.push(part.generate_rust_code()?);
+                part.generated_dependencies_iter().for_each(|(k, v)| {
+                    match self.generated_dependencies.get_mut(k) {
+                        Some(val) => {
+                            val.extend(v.clone());
+                        }
+                        None => {
+                            self.generated_dependencies.insert(k.clone(), v.clone());
+                        }
+                    }
+                });
             }
         }
 
-        for part in self.commands.iter() {
+        for part in self.commands.iter_mut() {
             generated_code.push(part.generate_rust_code_for_domain(self.domain.clone())?);
+            part.generated_dependencies_iter().for_each(|(k, v)| {
+                match self.generated_dependencies.get_mut(k) {
+                    Some(val) => {
+                        val.extend(v.clone());
+                    }
+                    None => {
+                        self.generated_dependencies.insert(k.clone(), v.clone());
+                    }
+                }
+            });
         }
 
-        if let Some(events) = &self.events {
-            for part in events.iter() {
+        if let Some(events) = &mut self.events {
+            for part in events.iter_mut() {
                 generated_code.push(part.generate_rust_code_for_domain(self.domain.clone())?);
+                part.generated_dependencies_iter().for_each(|(k, v)| {
+                    match self.generated_dependencies.get_mut(k) {
+                        Some(val) => {
+                            val.extend(v.clone());
+                        }
+                        None => {
+                            self.generated_dependencies.insert(k.clone(), v.clone());
+                        }
+                    }
+                });
             }
         }
+        self.generated_dependencies
+            .iter()
+            .filter(|(k, _)| **k != self.domain.replace("\", \"", "").to_lowercase())
+            .for_each(|(k, v)| {
+                let modules = v.iter().map(String::from).collect::<Vec<String>>();
+                match modules.len() {
+                    1 => {
+                        code.push_str(format!("use crate::{}::{};\n", k, modules[0]).as_str());
+                    }
+                    _ => {
+                        code.push_str(
+                            format!("use crate::{}::{{{}}};\n", k, modules.join(", ")).as_str(),
+                        );
+                    }
+                }
+            });
         code.push_str(generated_code.join("\n").as_str());
         code.push_str(FILE_FOOTER);
         Ok(code)

@@ -20,7 +20,6 @@ serde_json = "1.0.135"
 
 pub(crate) const UTILS_RS: &str = r##"use anyhow::{Result, *};
 use serde::*;
-use serde_json::*;
 
 #[derive(Debug, Deserialize, Serialize)]
 pub(crate) struct Empty {}
@@ -229,14 +228,32 @@ pub fn generate_utils_rs(out_dir: &PathBuf) -> Result<(), Error> {
     Ok(())
 }
 
-pub fn change_case_nth_letter(inp: &str, n: usize) -> String {
+pub fn change_case_nth_letter(inp: &str, n: usize, case: bool) -> String {
     let mut out = String::new();
     for (i, c) in inp.chars().enumerate() {
         if i == n {
-            out.push_str(&c.to_uppercase().to_string());
+            if case {
+                out.push_str(&c.to_uppercase().to_string());
+            } else {
+                out.push_str(&c.to_lowercase().to_string());
+            }
         } else {
             out.push(c);
         }
     }
     out
+}
+
+pub fn insert_str_at_nth_line(inp: &mut str, insert: &str, n: usize) -> String {
+    inp.lines()
+        .enumerate()
+        .map(|(i, line)| {
+            if i == n {
+                format!("{}\n{}", insert, line)
+            } else {
+                line.to_string()
+            }
+        })
+        .collect::<Vec<String>>()
+        .join("\n")
 }

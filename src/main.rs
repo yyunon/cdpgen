@@ -48,18 +48,20 @@ fn main() -> Result<(), Error> {
     let browser_domains = browser_proto_json["domains"].as_array().unwrap();
 
     for domain in js_domains.iter().chain(browser_domains.iter()) {
-        let domain_name = domain["domain"].as_str().unwrap();
+        let domain_name = domain["domain"]
+            .to_string()
+            .to_lowercase()
+            .replace("\"", "");
         let domain_file_name = format!("{}/{}.rs", SOURCE_DIR, domain_name);
         let domain_file = out_dir.join(domain_file_name);
-        println!("Parsing {}", domain_name);
         println!("Parsing {}", domain["domain"]);
-        let cdp_domain: CDPDomain = serde_json::from_value(domain.clone()).unwrap();
+        let mut cdp_domain: CDPDomain = serde_json::from_value(domain.clone()).unwrap();
         create_a_file(&domain_file)?;
         write_to_file(
             &mut fs::OpenOptions::new().append(true).open(&domain_file)?,
             cdp_domain.generate_rust_code()?,
         )?;
-        domain_files.push(domain_name.to_owned());
+        domain_files.push(domain_name);
     }
 
     domain_files.push("utils".to_owned());
